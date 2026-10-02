@@ -24,7 +24,15 @@ describe("field validation", () => {
       ok: true,
       value: "718-555-1234",
     });
-    expect(normalizePhone("555-1234").ok).toBe(false);
+    expect(normalizePhone("12345").ok).toBe(false);
+  });
+
+  it("accepts international and local formats instead of insisting on 10 digits", () => {
+    expect(normalizePhone("+92 300 1234567")).toEqual({ ok: true, value: "+923001234567" });
+    expect(normalizePhone("0300-1234567")).toEqual({ ok: true, value: "03001234567" });
+    expect(normalizePhone("555-1234")).toEqual({ ok: true, value: "5551234" });
+    expect(normalizePhone("+1 (718) 555-1234")).toEqual({ ok: true, value: "+17185551234" });
+    expect(normalizePhone("call me").ok).toBe(false);
   });
 
   it("parses dates", () => {
@@ -41,6 +49,8 @@ describe("field validation", () => {
     expect(parsePreferredDate("February 31", FIXED_NOW).ok).toBe(false);
     expect(parsePreferredDate("2020-01-01", FIXED_NOW).ok).toBe(false);
     expect(parsePreferredDate("whenever", FIXED_NOW).ok).toBe(false);
+    expect(parsePreferredDate("next week", FIXED_NOW)).toEqual({ ok: true, value: "2026-10-09" });
+    expect(parsePreferredDate("the 20th", FIXED_NOW)).toEqual({ ok: true, value: "2026-10-20" });
   });
 
   it("maps location text", () => {

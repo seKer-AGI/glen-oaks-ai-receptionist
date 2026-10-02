@@ -25,4 +25,6 @@ export interface AppointmentSnapshot {
   };
   location: string | null;
   savedIds: number[];
+  /** Id of the request saved at the end of the last booking (shown until a new booking starts). */
+  savedId: number | null;
 }

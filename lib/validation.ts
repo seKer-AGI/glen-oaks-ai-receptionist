@@ -46,13 +46,66 @@ export function validateAddress(raw: string): Result<string> {
   return { ok: true, value: v };
 }
 
+const TEENS: Record<string, string> = {
+  ten: "10", eleven: "11", twelve: "12", thirteen: "13", fourteen: "14", fifteen: "15",
+  sixteen: "16", seventeen: "17", eighteen: "18", nineteen: "19",
+};
+const TENS: Record<string, string> = {
+  twenty: "2", thirty: "3", forty: "4", fifty: "5", sixty: "6", seventy: "7", eighty: "8", ninety: "9",
+};
+
+/**
+ * Turns what the patient said into a digit string. Handles plain digits and every common
+ * spoken form: "seven one eight", "double five", "twelve thirty-four", "three hundred".
+ */
+function spokenDigits(raw: string): string {
+  const tokens = raw.toLowerCase().split(/[\s,.\-()]+/).filter(Boolean);
+  const oneDigit = (t?: string) => (t === undefined ? "" : (DIGIT_WORDS[t] ?? (/^\d$/.test(t) ? t : "")));
+  let digits = "";
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    const next = tokens[i + 1];
+    if ((t === "double" || t === "triple") && oneDigit(next)) {
+      digits += oneDigit(next).repeat(t === "double" ? 2 : 3);
+      i++;
+    } else if (TEENS[t]) {
+      digits += TEENS[t];
+    } else if (TENS[t]) {
+      const unit = oneDigit(next);
+      if (unit && unit !== "0") {
+        digits += TENS[t] + unit; // "thirty four" -> 34
+        i++;
+      } else {
+        digits += TENS[t] + "0"; // "thirty" -> 30
+      }
+    } else if (oneDigit(t) && next === "hundred") {
+      digits += oneDigit(t) + "00"; // "three hundred" -> 300
+      i++;
+    } else if (t === "hundred") {
+      digits += "00";
+    } else {
+      digits += (DIGIT_WORDS[t] ?? t).replace(/\D/g, "");
+    }
+  }
+  return digits;
+}
+
+/**
+ * Accepts any plausible phone number (US or international, 7-15 digits) and never
+ * insists on a specific format. Only a genuinely unusable answer (too few digits) is rejected.
+ */
 export function normalizePhone(raw: string): Result<string> {
-  const words = raw.toLowerCase().split(/[\s,.-]+/).map((w) => DIGIT_WORDS[w] ?? w);
-  let digits = words.join("").replace(/\D/g, "");
-  if (digits.length === 11 && digits.startsWith("1")) digits = digits.slice(1);
-  if (digits.length !== 10) return { ok: false, error: "phone must have 10 digits" };
-  if (/^[01]/.test(digits)) return { ok: false, error: "phone area code is not valid" };
-  return { ok: true, value: `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}` };
+  const tokens = raw.toLowerCase().split(/[\s,.\-()]+/).filter(Boolean);
+  let digits = spokenDigits(raw);
+  const plus = raw.trim().startsWith("+") || tokens[0] === "plus";
+  if (!plus && digits.length === 11 && digits.startsWith("1")) digits = digits.slice(1);
+  if (digits.length < 7 || digits.length > 15) {
+    return { ok: false, error: "phone needs at least 7 digits" };
+  }
+  if (!plus && digits.length === 10) {
+    return { ok: true, value: `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}` };
+  }
+  return { ok: true, value: (plus ? "+" : "") + digits };
 }
 
 export function validateReason(raw: string): Result<string> {
@@ -94,6 +147,19 @@ export function parsePreferredDate(raw: string, now: Date = new Date()): Result<
   if (/\btoday\b/.test(text)) return { ok: true, value: addDays(0) };
   if (/\btomorrow\b/.test(text)) return { ok: true, value: addDays(1) };
 
+  if (/\bnext week\b/.test(text)) return { ok: true, value: addDays(7) };
+  if (/\bday after tomorrow\b/.test(text)) return { ok: true, value: addDays(2) };
+  const dayOnly = text.match(/^(?:the\s+)?(\d{1,2})$/);
+  if (dayOnly) {
+    const day = +dayOnly[1];
+    let res = iso(today.getUTCFullYear(), today.getUTCMonth() + 1, day);
+    if (!res || new Date(res + "T00:00:00Z") < today) {
+      const nm = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + 1, 1));
+      res = iso(nm.getUTCFullYear(), nm.getUTCMonth() + 1, day);
+    }
+    return notPast(res);
+  }
+
   const wd = WEEKDAYS.findIndex((w) => new RegExp(`\\b${w}\\b`).test(text));
   if (wd >= 0) {
     let diff = (wd - today.getUTCDay() + 7) % 7;
@@ -124,6 +190,12 @@ export function parsePreferredDate(raw: string, now: Date = new Date()): Result<
     return withYear(mo, +m[1], m[3] ? +m[3] : undefined);
   }
   return bad("could not understand that date; ask for a specific day");
+}
+
+/** A date we could not parse (e.g. "sometime next month") is still kept as the patient's own words. */
+export function isFreeTextDate(raw: string): boolean {
+  const v = raw.trim();
+  return v.length >= 3 && v.length <= 80 && /[\p{L}\d]/u.test(v);
 }
 
 export function validateLocation(raw: string | null | undefined): Location | null {
@@ -162,6 +234,7 @@ export function validateAppointmentInput(
     }
     const r = validateField(f, String(raw), now);
     if (r.ok) out[f] = r.value;
+    else if (f === "preferred_date" && isFreeTextDate(String(raw))) out[f] = String(raw).trim().replace(/\s+/g, " ");
     else errors[f] = r.error;
   }
   if (Object.keys(errors).length) return { ok: false, errors };

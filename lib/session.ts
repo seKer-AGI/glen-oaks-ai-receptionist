@@ -12,6 +12,11 @@ export interface CallSession {
   booking: boolean;
   appointment: Partial<Record<AppointmentField, string>>;
   location: Location | null;
+  /** How many times each field failed validation (after 2 we accept the raw text). */
+  attempts: Partial<Record<AppointmentField, number>>;
+  lastSaved: { id: number; fields: Record<AppointmentField, string>; location: Location | null } | null;
+  /** Background transcript saves, chained so they never overlap. */
+  persistChain: Promise<unknown>;
   requestIds: number[];
   silenceCount: number;
   /** Serializes turns so overlapping requests cannot interleave. */
@@ -37,6 +42,9 @@ export function createSession(): CallSession {
     booking: false,
     appointment: {},
     location: null,
+    attempts: {},
+    lastSaved: null,
+    persistChain: Promise.resolve(),
     requestIds: [],
     silenceCount: 0,
     queue: Promise.resolve(),

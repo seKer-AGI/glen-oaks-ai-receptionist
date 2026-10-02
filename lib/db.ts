@@ -15,13 +15,15 @@ const SCHEMA = [
     full_name      TEXT NOT NULL,
     address        TEXT NOT NULL,
     phone          TEXT NOT NULL,
-    preferred_date DATE NOT NULL,
+    preferred_date TEXT NOT NULL,
     reason         TEXT NOT NULL,
     location       TEXT CHECK (location IS NULL OR location IN ('Glen Oaks', 'Jamaica')),
     status         TEXT NOT NULL DEFAULT 'new' CHECK (status IN ('new', 'contacted', 'completed', 'cancelled')),
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
   )`,
+  // Existing databases created with DATE: convert so free-text dates are allowed. No-op otherwise.
+  `ALTER TABLE appointment_requests ALTER COLUMN preferred_date TYPE TEXT USING preferred_date::text`,
   `CREATE INDEX IF NOT EXISTS idx_requests_status ON appointment_requests (status)`,
   `CREATE INDEX IF NOT EXISTS idx_requests_created ON appointment_requests (created_at)`,
   `CREATE TABLE IF NOT EXISTS call_transcripts (
@@ -45,7 +47,13 @@ function createPool(): Pool {
 }
 
 export async function ensureSchema(pool: Queryable): Promise<void> {
-  for (const stmt of SCHEMA) await pool.query(stmt);
+  for (const stmt of SCHEMA) {
+    try {
+      await pool.query(stmt);
+    } catch (err) {
+      if (!stmt.startsWith("ALTER TABLE")) throw err; // the migration is best-effort
+    }
+  }
 }
 
 /** Returns the shared connection pool, creating the tables on first use. */

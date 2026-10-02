@@ -17,7 +17,7 @@ let saved = null;
 for (const line of [
   "Hi, what services do you offer?", "Do you offer Invisalign?", "Where are you located?",
   "Hi, I'd like to book an appointment.", "My name is John Smith.", "123 Main Street, Queens.",
-  "718-555-1234.", "October 20th.", "I'd like an Invisalign consultation at the Jamaica office.",
+  "My phone number is plus nine two, three hundred, one two three four five six seven.", "October 20th.", "I'd like an Invisalign consultation at the Jamaica office.",
 ]) {
   const fd = new FormData();
   fd.append("sessionId", start.sessionId);
@@ -25,7 +25,7 @@ for (const line of [
   const t0 = Date.now();
   const res = await fetch(`${BASE}/api/voice/turn`, { method: "POST", body: fd });
   const ev = [];
-  let firstAudioMs = null, buf = "";
+  let firstAudioMs = null, firstTextMs = null, buf = "";
   const reader = res.body.getReader(), dec = new TextDecoder();
   for (;;) {
     const { done, value } = await reader.read();
@@ -34,6 +34,7 @@ for (const line of [
     let nl;
     while ((nl = buf.indexOf("\n")) >= 0) {
       const e = JSON.parse(buf.slice(0, nl)); buf = buf.slice(nl + 1);
+      if (e.type === "reply_delta" && firstTextMs === null) firstTextMs = Date.now() - t0;
       if (e.type === "audio_chunk" && firstAudioMs === null) firstAudioMs = Date.now() - t0;
       ev.push(e);
     }
@@ -41,7 +42,7 @@ for (const line of [
   const tr = ev.find((e) => e.type === "transcript"), rp = ev.find((e) => e.type === "reply");
   console.log(`
 PATIENT (heard): ${tr?.text}
-AI (${rp?.wordCount} words, first audio ${firstAudioMs} ms, total ${Date.now() - t0} ms): ${rp?.text ?? JSON.stringify(ev)}`);
+AI (${rp?.wordCount} words, first text ${firstTextMs} ms, first audio ${firstAudioMs} ms, total ${Date.now() - t0} ms): ${rp?.text ?? JSON.stringify(ev)}`);
   if (rp?.saved) saved = rp.saved.id;
 }
 console.log("\nSaved request id:", saved);
