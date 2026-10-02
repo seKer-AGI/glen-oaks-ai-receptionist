@@ -14,16 +14,20 @@ export function isOpenAIConfigured(): boolean {
   return Boolean(env.openaiKey());
 }
 
+function chatParams(req: LlmRequest) {
+  return {
+    model: env.chatModel(),
+    messages: req.messages as OpenAI.Chat.ChatCompletionMessageParam[],
+    tools: req.tools as OpenAI.Chat.ChatCompletionTool[] | undefined,
+    tool_choice: req.tools ? (req.toolChoice ?? "auto") : undefined,
+    temperature: 0.3,
+    max_tokens: 90,
+  } as const;
+}
+
 export const openAiLlm: LlmClient = {
   async complete(req: LlmRequest): Promise<LlmResponse> {
-    const res = await getOpenAI().chat.completions.create({
-      model: env.chatModel(),
-      messages: req.messages as OpenAI.Chat.ChatCompletionMessageParam[],
-      tools: req.tools as OpenAI.Chat.ChatCompletionTool[] | undefined,
-      tool_choice: req.tools ? req.toolChoice ?? "auto" : undefined,
-      temperature: 0.3,
-      max_tokens: 120,
-    });
+    const res = await getOpenAI().chat.completions.create(chatParams(req));
     const msg = res.choices[0]?.message;
     return {
       content: msg?.content ?? null,
@@ -35,6 +39,27 @@ export const openAiLlm: LlmClient = {
           arguments: (c as { function: { arguments: string } }).function.arguments,
         })),
     };
+  },
+
+  async completeStream(req, onText): Promise<LlmResponse> {
+    const stream = await getOpenAI().chat.completions.create({ ...chatParams(req), stream: true });
+    let content = "";
+    const calls: { id: string; name: string; arguments: string }[] = [];
+    for await (const chunk of stream) {
+      const delta = chunk.choices[0]?.delta;
+      if (!delta) continue;
+      if (delta.content) {
+        content += delta.content;
+        onText(delta.content);
+      }
+      for (const tc of delta.tool_calls ?? []) {
+        const c = (calls[tc.index] ??= { id: "", name: "", arguments: "" });
+        if (tc.id) c.id = tc.id;
+        if (tc.function?.name) c.name += tc.function.name;
+        if (tc.function?.arguments) c.arguments += tc.function.arguments;
+      }
+    }
+    return { content: content || null, toolCalls: calls.filter(Boolean) };
   },
 };
 

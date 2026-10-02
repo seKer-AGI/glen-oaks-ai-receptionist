@@ -35,6 +35,8 @@ Key design choices:
 
 - **One provider (OpenAI), three server-side calls.** One API key, no WebRTC/media server to run. Simplest reliable architecture.
 - **Why not the OpenAI Realtime speech-to-speech API?** It speaks before any code can check the text, so the mandatory 20-word limit could not be enforced programmatically. This pipeline checks every reply before it is spoken.
+- **Streaming end to end.** The LLM is streamed token by token. Text is pushed to the on-screen "Live response" panel as it is generated. A small buffer (`lib/speechGate.ts`) releases the first natural phrase (a sentence, or a clause of 6+ words ending in a comma) to TTS immediately, and each phrase is synthesized in parallel but sent to the browser strictly in order, so the next phrase is usually ready before the previous one finishes playing. Tokens are never sent to TTS one by one. The 20-word cap is enforced inside the buffer: a phrase is only released if it still fits.
+- **Soft data collection.** The LLM only listens; the server normalizes and stores. Phone numbers accept any plausible format (7-15 digits, +country codes, spoken digits like "double five" or "twelve thirty-four"). An unreadable number gets a fixed, polite *"Sorry, could you repeat your phone number?"*, and after a second non-answer the call moves on, so no field can block the conversation.
 - **Voice activity detection runs in the browser** (adaptive energy threshold, ~0.7 s end-of-speech). It supports interruptions (barge-in), "wait", "hello?", unclear speech, and silence prompts after 12 s.
 - **Retrieval, not a giant prompt.** `knowledge/*.md` is chunked by `##` heading and ranked with BM25 plus a small synonym map. The top 3 chunks are injected per turn. If nothing matches, the LLM is told to say *"I can have our team provide that information."*
 - **The server owns the appointment state.** The LLM only calls `update_appointment`; the server validates each field and saves once all five are valid. The final sentence is produced by code, so it cannot drift.
@@ -139,6 +141,14 @@ ADMIN_PASSWORD=pw BASE=http://localhost:3100 node tests/e2e/run.mjs
 npm run dev -- -p 3200
 node --env-file=.env.local tests/e2e/live.mjs
 ```
+
+**Streaming + phone-number check with your real key** (verifies progressive text, ordered audio with nothing missing or repeated by re-transcribing the audio, and 7 phone-number cases; saves nothing):
+
+```bash
+node --env-file=.env.local tests/e2e/stream-check.mjs
+```
+
+**Latency metrics.** In `npm run dev` the browser console prints a `[latency ms]` table per turn (speech sent → first text → first audio → audible, plus server STT / LLM first token / first speakable chunk / TTS first byte). Set `VOICE_TIMING=1` to also log the server marks. They contain no user content.
 
 ### Demo script
 

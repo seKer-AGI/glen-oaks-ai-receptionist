@@ -3,6 +3,7 @@
 import { useVoiceCall } from "@/hooks/useVoiceCall";
 import type { CallStatus } from "@/types";
 import { AppointmentPanel } from "./AppointmentPanel";
+import { LiveResponse } from "./LiveResponse";
 import { TranscriptPanel } from "./TranscriptPanel";
 
 const STATUS_TEXT: Record<CallStatus, string> = {
@@ -17,7 +18,7 @@ const STATUS_TEXT: Record<CallStatus, string> = {
 };
 
 export function CallInterface() {
-  const { status, transcript, error, appointment, savedRequestId, startCall, endCall } = useVoiceCall();
+  const { status, transcript, error, appointment, liveText, liveStreaming, startCall, endCall } = useVoiceCall();
   const active = ["connecting", "listening", "hearing", "thinking", "speaking"].includes(status);
 
   return (
@@ -81,7 +82,10 @@ export function CallInterface() {
         <TranscriptPanel lines={transcript} />
       </div>
 
-      <AppointmentPanel state={appointment} savedId={savedRequestId} />
+      <div className="space-y-6 lg:sticky lg:top-6 lg:h-fit">
+        <LiveResponse text={liveText} streaming={liveStreaming} active={active} />
+        <AppointmentPanel state={appointment} />
+      </div>
     </div>
   );
 }

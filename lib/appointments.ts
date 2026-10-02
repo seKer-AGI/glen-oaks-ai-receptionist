@@ -22,7 +22,7 @@ function toRequest(row: any): AppointmentRequest {
   return {
     ...row,
     id: Number(row.id),
-    preferred_date: row.preferred_date instanceof Date ? row.preferred_date.toISOString().slice(0, 10) : String(row.preferred_date).slice(0, 10),
+    preferred_date: row.preferred_date instanceof Date ? row.preferred_date.toISOString().slice(0, 10) : String(row.preferred_date),
     created_at: iso(row.created_at),
     updated_at: iso(row.updated_at),
   };

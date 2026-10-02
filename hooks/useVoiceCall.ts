@@ -14,9 +14,12 @@ const MAX_SILENCE_PROMPTS = 2;
 
 type ServerEvent =
   | { type: "transcript"; text: string }
+  | { type: "reply_delta"; text: string }
+  | { type: "state"; state: AppointmentSnapshot }
   | { type: "reply"; text: string; saved: { id: number } | null; state: AppointmentSnapshot }
   | { type: "audio_chunk"; audio: string; mime: string }
   | { type: "audio_end" }
+  | { type: "metrics"; marks: Record<string, number> }
   | { type: "error"; message: string }
   | { type: "done" };
 
@@ -26,6 +29,8 @@ export function useVoiceCall() {
   const [error, setError] = useState<string | null>(null);
   const [appointment, setAppointment] = useState<AppointmentSnapshot | null>(null);
   const [savedRequestId, setSavedRequestId] = useState<number | null>(null);
+  const [liveText, setLiveText] = useState("");
+  const [liveStreaming, setLiveStreaming] = useState(false);
 
   const statusRef = useRef<CallStatus>("idle");
   const sessionRef = useRef<string | null>(null);
@@ -37,6 +42,7 @@ export function useVoiceCall() {
   const silenceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const silencePrompts = useRef(0);
   const lineId = useRef(0);
+  const genRef = useRef(0);
   const vad = useRef({
     inSpeech: false,
     voicedMs: 0,
@@ -83,6 +89,28 @@ export function useVoiceCall() {
       clearSilenceTimer();
       const ctrl = new AbortController();
       abortRef.current = ctrl;
+      const gen = ++genRef.current; // events from an interrupted/older turn are ignored
+      const live = () => gen === genRef.current;
+
+      // Dev-only latency marks (ms since the audio was sent). No user content.
+      const sentAt = performance.now();
+      const lat: Record<string, number> = {};
+      const mark = (k: string) => (lat[k] ??= Math.round(performance.now() - sentAt));
+      let serverMarks: Record<string, number> | null = null;
+      const report = () => {
+        if (process.env.NODE_ENV === "production" || !serverMarks || lat.firstPlay === undefined) return;
+        const m = serverMarks;
+        console.info("[latency ms]", {
+          "speech sent → first text": lat.firstText,
+          "speech sent → first audio bytes": lat.firstAudio,
+          "speech sent → audible": lat.firstPlay,
+          "server: STT": m.stt,
+          "server: STT → LLM first token": m.firstToken !== undefined && m.stt !== undefined ? m.firstToken - m.stt : undefined,
+          "server: first token → first speakable chunk": m.firstChunk !== undefined && m.firstToken !== undefined ? m.firstChunk - m.firstToken : undefined,
+          "server: chunk → TTS first byte": m.ttsFirstByte !== undefined && m.firstChunk !== undefined ? m.ttsFirstByte - m.firstChunk : undefined,
+          "server: total": m.end,
+        });
+      };
 
       let playing = false;
       try {
@@ -94,16 +122,30 @@ export function useVoiceCall() {
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buf = "";
-        const handle = async (ev: ServerEvent) => {
+        const handle = (ev: ServerEvent) => {
+          if (!live()) return;
           if (ev.type === "transcript") addLine("patient", ev.text);
-          else if (ev.type === "reply") {
+          else if (ev.type === "state") setAppointment(ev.state);
+          else if (ev.type === "reply_delta") {
+            // The right-hand live panel shows the reply as it is being generated.
+            mark("firstText");
+            setLiveText(ev.text);
+            setLiveStreaming(true);
+          } else if (ev.type === "reply") {
+            // The bottom transcript gets the finished line, exactly as before.
             addLine("receptionist", ev.text);
+            setLiveText(ev.text);
+            setLiveStreaming(false);
             setAppointment(ev.state);
             if (ev.saved) setSavedRequestId(ev.saved.id);
+          } else if (ev.type === "metrics") {
+            serverMarks = ev.marks;
+            report();
           } else if (ev.type === "error") {
             setError(ev.message);
           } else if (ev.type === "audio_chunk") {
             playing = true;
+            mark("firstAudio");
             if (!playerRef.current) {
               const p: StreamingPlayer = new StreamingPlayer(
                 ev.mime,
@@ -114,7 +156,11 @@ export function useVoiceCall() {
                     armSilenceTimer();
                   }
                 },
-                () => updateStatus("speaking"),
+                () => {
+                  mark("firstPlay");
+                  report();
+                  updateStatus("speaking");
+                },
               );
               playerRef.current = p;
             }
@@ -131,16 +177,19 @@ export function useVoiceCall() {
           while ((nl = buf.indexOf("\n")) >= 0) {
             const line = buf.slice(0, nl).trim();
             buf = buf.slice(nl + 1);
-            if (line) await handle(JSON.parse(line) as ServerEvent);
+            if (line) handle(JSON.parse(line) as ServerEvent);
           }
         }
       } catch (e) {
-        if ((e as Error).name !== "AbortError") setError("I'm having trouble connecting. Please try again.");
+        if ((e as Error).name !== "AbortError" && live()) setError("I'm having trouble connecting. Please try again.");
       } finally {
-        playerRef.current?.end(); // no-op if already ended
-        if (!playing && statusRef.current === "thinking") {
-          updateStatus("listening");
-          armSilenceTimer();
+        if (live()) {
+          setLiveStreaming(false);
+          playerRef.current?.end(); // no-op if already ended
+          if (!playing && statusRef.current === "thinking") {
+            updateStatus("listening");
+            armSilenceTimer();
+          }
         }
       }
     },
@@ -230,7 +279,13 @@ export function useVoiceCall() {
         }
         v.voicedMs = voiced ? v.voicedMs + ms : 0;
         if (v.voicedMs >= (aiTalking ? 250 : 80)) {
-          if (aiTalking) stopPlayback(); // barge-in: patient interrupted
+          if (aiTalking) {
+            // Barge-in: stop queued/streaming AI audio and ignore the rest of that response.
+            genRef.current++;
+            abortRef.current?.abort();
+            stopPlayback();
+            setLiveStreaming(false);
+          }
           clearSilenceTimer();
           silencePrompts.current = 0;
           v.inSpeech = true;
@@ -267,6 +322,8 @@ export function useVoiceCall() {
     setTranscript([]);
     setAppointment(null);
     setSavedRequestId(null);
+    setLiveText("");
+    setLiveStreaming(false);
     silencePrompts.current = 0;
     vad.current = { ...vad.current, inSpeech: false, chunks: [], preroll: [], prerollMs: 0, voicedMs: 0, silenceMs: 0, totalMs: 0 };
     updateStatus("connecting");
@@ -324,5 +381,5 @@ export function useVoiceCall() {
 
   useEffect(() => () => cleanup(), [cleanup]);
 
-  return { status, transcript, error, appointment, savedRequestId, startCall, endCall };
+  return { status, transcript, error, appointment, savedRequestId, liveText, liveStreaming, startCall, endCall };
 }
