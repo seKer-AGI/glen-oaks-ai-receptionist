@@ -16,23 +16,12 @@ describe("field validation", () => {
     expect(validateName("A").ok).toBe(false);
   });
 
-  it("normalizes phone formats and spoken digits", () => {
+  it("stores phone text as spoken without format checks", () => {
     expect(normalizePhone("718-555-1234")).toEqual({ ok: true, value: "718-555-1234" });
-    expect(normalizePhone("(718) 555 1234")).toEqual({ ok: true, value: "718-555-1234" });
-    expect(normalizePhone("1 718 555 1234")).toEqual({ ok: true, value: "718-555-1234" });
-    expect(normalizePhone("seven one eight five five five one two three four")).toEqual({
-      ok: true,
-      value: "718-555-1234",
-    });
-    expect(normalizePhone("12345").ok).toBe(false);
-  });
-
-  it("accepts international and local formats instead of insisting on 10 digits", () => {
-    expect(normalizePhone("+92 300 1234567")).toEqual({ ok: true, value: "+923001234567" });
-    expect(normalizePhone("0300-1234567")).toEqual({ ok: true, value: "03001234567" });
-    expect(normalizePhone("555-1234")).toEqual({ ok: true, value: "5551234" });
-    expect(normalizePhone("+1 (718) 555-1234")).toEqual({ ok: true, value: "+17185551234" });
-    expect(normalizePhone("call me").ok).toBe(false);
+    expect(normalizePhone("(718) 555 1234")).toEqual({ ok: true, value: "(718) 555 1234" });
+    expect(normalizePhone("12345")).toEqual({ ok: true, value: "12345" });
+    expect(normalizePhone("call me")).toEqual({ ok: true, value: "call me" });
+    expect(normalizePhone("   ").ok).toBe(false);
   });
 
   it("parses dates", () => {
@@ -77,12 +66,20 @@ describe("validateAppointmentInput (required fields)", () => {
       expect(r.value.location).toBe("Jamaica");
     }
   });
-  it("reports each missing field", () => {
+  it("reports each missing required field", () => {
     for (const key of Object.keys(good) as (keyof typeof good)[]) {
+      if (key === "phone") continue;
       const { [key]: _omit, ...rest } = good;
       const r = validateAppointmentInput(rest, FIXED_NOW);
       expect(r.ok).toBe(false);
       if (!r.ok) expect(r.errors[key]).toBe("required");
     }
+  });
+
+  it("defaults phone when omitted", () => {
+    const { phone: _p, ...rest } = good;
+    const r = validateAppointmentInput(rest, FIXED_NOW);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.phone).toBe("Not provided");
   });
 });

@@ -3,10 +3,9 @@
 import { useVoiceCall } from "@/hooks/useVoiceCall";
 import type { CallStatus } from "@/types";
 import { AppointmentPanel } from "./AppointmentPanel";
-import { LiveResponse } from "./LiveResponse";
-import { TranscriptPanel } from "./TranscriptPanel";
+import { WaveformBars } from "./WaveformBars";
 
-const STATUS_TEXT: Record<CallStatus, string> = {
+const STATUS_HEADLINE: Record<CallStatus, string> = {
   idle: "Ready to take your call",
   connecting: "Connecting…",
   listening: "Listening…",
@@ -17,75 +16,73 @@ const STATUS_TEXT: Record<CallStatus, string> = {
   error: "Call could not start",
 };
 
+const STATUS_SUBLINE: Record<CallStatus, string> = {
+  idle: "Tap below to speak with the receptionist.",
+  connecting: "Setting up your call…",
+  listening: "You can speak whenever you're ready.",
+  hearing: "I'm listening…",
+  thinking: "Please hold for a moment.",
+  speaking: "The receptionist is responding.",
+  ended: "Start a new call to speak with the receptionist.",
+  error: "Check your microphone and try again.",
+};
+
 export function CallInterface() {
-  const { status, transcript, error, appointment, liveText, liveStreaming, startCall, endCall } = useVoiceCall();
+  const { status, error, appointment, startCall, endCall } = useVoiceCall();
   const active = ["connecting", "listening", "hearing", "thinking", "speaking"].includes(status);
 
-  return (
-    <div className="grid gap-6 lg:grid-cols-[1fr_340px]">
-      <div className="space-y-6">
-        <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm">
-          <div
-            className={`mx-auto flex h-24 w-24 items-center justify-center rounded-full ${
-              active ? "bg-brand-500 text-white" : "bg-brand-100 text-brand-700"
-            } ${status === "listening" || status === "hearing" ? "animate-pulse" : ""}`}
-            aria-hidden
-          >
-            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="9" y="3" width="6" height="12" rx="3" />
-              <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
-            </svg>
-          </div>
+  const startLabel = status === "ended" || status === "error" ? "Start New Call" : "Start Call";
 
-          <div className="mt-5 h-6 text-sm font-medium text-slate-600" role="status">
+  return (
+    <div className="grid gap-5 lg:grid-cols-2 lg:items-stretch">
+      <section className="flex min-h-[420px] flex-col rounded-[28px] bg-app-surface px-8 py-10 shadow-card sm:px-12">
+        <div className="flex flex-1 flex-col items-center justify-center text-center">
+          <WaveformBars active={active} />
+
+          <p className="mt-8 text-xl font-semibold text-app-text" role="status">
             {active ? (
               <span className="inline-flex items-center gap-2">
-                <span className="h-2 w-2 animate-pulse rounded-full bg-red-500" />
-                Call in progress · {STATUS_TEXT[status]}
+                <span className="h-2 w-2 animate-pulse rounded-full bg-app-accent" />
+                {STATUS_HEADLINE[status]}
               </span>
             ) : (
-              STATUS_TEXT[status]
+              STATUS_HEADLINE[status]
             )}
-          </div>
+          </p>
 
-          <div className="mt-5">
-            {active ? (
-              <button
-                onClick={endCall}
-                className="rounded-full bg-red-600 px-8 py-3 font-semibold text-white shadow hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-400"
-              >
-                End Call
-              </button>
-            ) : (
-              <button
-                onClick={startCall}
-                className="rounded-full bg-brand-600 px-8 py-3 font-semibold text-white shadow hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-500"
-              >
-                {status === "ended" || status === "error" ? "Start New Call" : "Start Call"}
-              </button>
-            )}
-          </div>
+          <p className="mt-2 max-w-sm text-sm text-app-muted">
+            {error ? error : STATUS_SUBLINE[status]}
+          </p>
+        </div>
 
-          {error && (
-            <p role="alert" className="mx-auto mt-4 max-w-md rounded-lg bg-red-50 px-4 py-2 text-sm text-red-700">
-              {error}
-            </p>
-          )}
-          {!active && status === "idle" && (
-            <p className="mx-auto mt-4 max-w-md text-xs text-slate-400">
-              Your browser will ask for microphone access. Try: &ldquo;What services do you offer?&rdquo; or
-              &ldquo;I&rsquo;d like to book an appointment.&rdquo;
-            </p>
+        <div className="mt-8">
+          {active ? (
+            <button
+              type="button"
+              onClick={endCall}
+              className="w-full rounded-full border border-app-danger/40 bg-transparent py-4 text-base font-semibold text-app-danger transition hover:bg-app-danger/10 focus:outline-none focus:ring-2 focus:ring-app-danger/40"
+            >
+              End Call
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={startCall}
+              className="w-full rounded-full bg-app-accent py-4 text-base font-semibold text-app-accent-fg transition hover:brightness-105 focus:outline-none focus:ring-2 focus:ring-app-accent/50"
+            >
+              {startLabel}
+            </button>
           )}
         </div>
 
-        <TranscriptPanel lines={transcript} />
-      </div>
+        {error && active && (
+          <p role="alert" className="mt-4 text-center text-sm text-app-danger">
+            {error}
+          </p>
+        )}
+      </section>
 
-      <div className="space-y-6 lg:sticky lg:top-6 lg:h-fit">
-        <LiveResponse text={liveText} streaming={liveStreaming} active={active} />
-        <AppointmentPanel state={appointment} />
-      </div>
+      <AppointmentPanel state={appointment} />
     </div>
   );
 }

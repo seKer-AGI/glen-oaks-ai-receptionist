@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { countWords } from "@/lib/responseLength";
 import { SPOKEN } from "@/lib/config";
-import { appointmentSnapshot, handleUserTurn, type Deps } from "@/lib/receptionist";
+import { applyAppointmentUpdate, appointmentSnapshot, handleUserTurn, type Deps } from "@/lib/receptionist";
 import { listAppointmentRequests } from "@/lib/appointments";
 import { FIXED_NOW, freshDb, kb, newSession, scriptedLlm, toolCall } from "./helpers";
 
@@ -134,18 +134,6 @@ describe("appointment workflow", () => {
     expect(llm.calls).toHaveLength(1); // fast path: no second LLM round trip
   });
 
-  it("asks politely to repeat an unusable phone number instead of saying it is invalid", async () => {
-    const s = newSession();
-    s.booking = true;
-    s.appointment = { full_name: "John Smith", address: "123 Main St" };
-    const llm = scriptedLlm([{ toolCalls: [toolCall({ phone: "555-12" })] }]);
-    const { reply } = await handleUserTurn(s, "uh it's five five five twelve", deps(llm));
-    expect(s.appointment.phone).toBeUndefined();
-    expect(reply).toBe("Sorry, could you repeat your phone number?");
-    expect(reply).not.toMatch(/invalid|incorrect|must|format|digits/i);
-    expect(llm.calls).toHaveLength(0); // deterministic re-ask: instant, no LLM round trip
-  });
-
   it("does not choose a location from the home address; keeps null when unspecified", async () => {
     const s = newSession();
     s.booking = true;
@@ -155,7 +143,7 @@ describe("appointment workflow", () => {
     expect(out.saved?.location).toBeNull();
   });
 
-  it("returns a short spoken error if the database save fails and keeps the details", async () => {
+  it("still thanks the caller if the database save fails and keeps the details on screen", async () => {
     const s = newSession();
     s.booking = true;
     s.appointment = { full_name: "A Person", address: "1 Main St", phone: "718-555-1234", preferred_date: "2026-10-10" };
@@ -164,8 +152,9 @@ describe("appointment workflow", () => {
       ...deps(llm),
       saveRequest: async () => { throw new Error("db down"); },
     });
-    expect(out.reply).toBe(SPOKEN.dbError);
-    expect(s.appointment.reason).toBe("A cleaning");
+    expect(out.reply).toBe(SPOKEN.completed);
+    expect(out.saved).toBeUndefined();
+    expect(appointmentSnapshot(s).fields.reason).toBe("A cleaning");
   });
 });
 
@@ -242,30 +231,12 @@ describe("streaming", () => {
 });
 
 describe("relaxed collection", () => {
-  it("accepts an international phone number on the first try", async () => {
+  it("stores a volunteered phone number exactly as given", () => {
     const s = newSession();
-    s.booking = true;
-    s.appointment = { full_name: "Ali Khan", address: "12 Mall Road, Lahore" };
-    const llm = scriptedLlm([{ toolCalls: [toolCall({ phone: "+92 300 1234567" })] }]);
-    const { reply } = await handleUserTurn(s, "My number is plus nine two three zero zero one two three four five six seven", deps(llm));
-    expect(s.appointment.phone).toBe("+923001234567");
-    expect(reply).toMatch(/date/);
-  });
-
-  it("never gets stuck: after two failed tries the patient's own words are kept", async () => {
-    const s = newSession();
-    s.booking = true;
-    s.appointment = { full_name: "Ali Khan", address: "12 Mall Road" };
-    const llm = scriptedLlm([
-      { toolCalls: [toolCall({ phone: "123" })] },
-      { toolCalls: [toolCall({ phone: "123" })] },
-    ]);
-    const first = await handleUserTurn(s, "123", deps(llm));
-    expect(first.reply).toBe("Sorry, could you repeat your phone number?");
-    expect(s.appointment.phone).toBeUndefined();
-    const second = await handleUserTurn(s, "123", deps(llm));
+    applyAppointmentUpdate(s, JSON.stringify({ phone: "call me anytime" }), FIXED_NOW);
+    expect(s.appointment.phone).toBe("call me anytime");
+    applyAppointmentUpdate(s, JSON.stringify({ phone: "123" }), FIXED_NOW);
     expect(s.appointment.phone).toBe("123");
-    expect(second.reply).toMatch(/date/); // moved on to the next question
   });
 
   it("keeps a date it cannot parse as free text so the saved request still goes through", async () => {
@@ -282,65 +253,16 @@ describe("relaxed collection", () => {
     expect(out.saved?.preferred_date).toBe("sometime after the holidays");
   });
 
-  it("Test 7: an unclear phone answer gets a polite re-ask, never 'invalid'", async () => {
+  it("accepts any phone answer on the first try without asking to repeat", async () => {
     const s = newSession();
     s.booking = true;
     s.appointment = { full_name: "John Smith", address: "123 Main St" };
     const llm = scriptedLlm([]);
-    const { reply } = await handleUserTurn(s, "Um, I don't really remember it right now.", deps(llm));
-    expect(reply).toBe("Sorry, could you repeat your phone number?");
-    expect(s.appointment.phone).toBeUndefined();
+    const { reply } = await handleUserTurn(s, "I don't remember it right now.", deps(llm));
+    expect(s.appointment.phone).toBe("I don't remember it right now");
+    expect(reply).toMatch(/date/i);
+    expect(reply).not.toMatch(/repeat|invalid|try again/i);
     expect(llm.calls).toHaveLength(0);
-  });
-
-  it("does not loop forever on a phone number: after a second non-answer it moves on", async () => {
-    const s = newSession();
-    s.booking = true;
-    s.appointment = { full_name: "John Smith", address: "123 Main St" };
-    const llm = scriptedLlm([]);
-    await handleUserTurn(s, "I'd rather not say", deps(llm));
-    const second = await handleUserTurn(s, "I really don't remember it", deps(llm));
-    expect(s.appointment.phone).toBe("Not provided");
-    expect(second.reply).toMatch(/date/);
-  });
-
-  it("lets a patient who says 'sorry, I said that wrong' simply try again", async () => {
-    const s = newSession();
-    s.booking = true;
-    s.appointment = { full_name: "John Smith", address: "123 Main St", phone: "718-555-1234" };
-    const llm = scriptedLlm([
-      { toolCalls: [toolCall({})] },
-      { content: "No problem. What's the best phone number?" },
-    ]);
-    const { reply } = await handleUserTurn(s, "Sorry, I said that wrong.", deps(llm));
-    expect(reply).toMatch(/phone|date/i);
-    expect(reply).not.toMatch(/invalid|incorrect/i);
-  });
-
-  describe("phone number variations (no LLM needed)", () => {
-    const cases: [string, string][] = [
-      ["7185551234", "718-555-1234"],
-      ["718-555-1234", "718-555-1234"],
-      ["(718) 555-1234", "718-555-1234"],
-      ["718 555 1234", "718-555-1234"],
-      ["My number is 718 555 1234", "718-555-1234"],
-      ["seven one eight five five five one two three four", "718-555-1234"],
-      ["My phone is seven one eight, five five five, twelve thirty-four.", "718-555-1234"],
-      ["My number is 718-555-1234... actually, sorry, it's 718-555-5678.", "718-555-5678"],
-    ];
-    for (const [said, stored] of cases) {
-      it(`accepts: ${said}`, async () => {
-        const s = newSession();
-        s.booking = true;
-        s.appointment = { full_name: "John Smith", address: "123 Main St" };
-        const llm = scriptedLlm([]);
-        const { reply } = await handleUserTurn(s, said, deps(llm));
-        expect(s.appointment.phone).toBe(stored);
-        expect(reply).toMatch(/date/);
-        expect(reply).not.toMatch(/invalid|incorrect|valid|digits|format/i);
-        expect(llm.calls).toHaveLength(0);
-      });
-    }
   });
 });
 

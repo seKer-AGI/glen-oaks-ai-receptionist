@@ -39,9 +39,14 @@ describe("appointment_requests (PostgreSQL)", () => {
   });
 
   it("rejects missing or invalid fields", async () => {
-    await expect(createAppointmentRequest({ ...base, phone: "123" }, FIXED_NOW)).rejects.toThrow(ValidationFailure);
     await expect(createAppointmentRequest({ ...base, reason: "" }, FIXED_NOW)).rejects.toThrow(ValidationFailure);
     expect(await listAppointmentRequests()).toHaveLength(0);
+  });
+
+  it("accepts any phone text and defaults when omitted", async () => {
+    expect((await createAppointmentRequest({ ...base, phone: "123" }, FIXED_NOW)).phone).toBe("123");
+    const { phone: _p, ...rest } = base;
+    expect((await createAppointmentRequest(rest, FIXED_NOW)).phone).toBe("Not provided");
   });
 
   it("supports search, status filter, update and delete", async () => {

@@ -2,6 +2,42 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --bg: #0b1114;
+  --surface: #141c20;
+  --surface-elevated: #161f23;
+  --border: #243038;
+  --text: #f4f7f8;
+  --text-muted: #8a9aa6;
+  --text-subtle: #6b7c88;
+  --accent: #5ec8bf;
+  --accent-dim: #3d8f88;
+  --accent-muted: #2a4a47;
+  --accent-foreground: #0a1214;
+  --bar: #3a5c58;
+  --bar-active: #5ec8bf;
+  --danger: #f87171;
+}
+
+html.light {
+  --bg: #f4f7f8;
+  --surface: #ffffff;
+  --surface-elevated: #ffffff;
+  --border: #e2e8f0;
+  --text: #0f172a;
+  --text-muted: #64748b;
+  --text-subtle: #94a3b8;
+  --accent: #14a3a8;
+  --accent-dim: #0e868b;
+  --accent-muted: #d5f2f1;
+  --accent-foreground: #ffffff;
+  --bar: #cbd5e1;
+  --bar-active: #14a3a8;
+  --danger: #dc2626;
+}
+
 body {
-  @apply bg-slate-50 text-slate-800 antialiased;
+  @apply antialiased;
+  background-color: var(--bg);
+  color: var(--text);
 }

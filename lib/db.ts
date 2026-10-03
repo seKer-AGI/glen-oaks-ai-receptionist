@@ -41,9 +41,17 @@ const g = globalThis as unknown as {
 };
 
 function createPool(): Pool {
-  // Uses DATABASE_URL if set, otherwise the standard PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE variables.
   const url = env.databaseUrl();
-  return new Pool(url ? { connectionString: url, max: 10 } : { max: 10 });
+  if (url) return new Pool({ connectionString: url, max: 10 });
+  // Explicit config so macOS/Homebrew Postgres (OS user, not role "postgres") works when PGUSER is unset.
+  return new Pool({
+    host: process.env.PGHOST ?? "localhost",
+    port: Number(process.env.PGPORT ?? 5432),
+    user: process.env.PGUSER || process.env.USER || "postgres",
+    password: process.env.PGPASSWORD || undefined,
+    database: process.env.PGDATABASE ?? "dentistDB",
+    max: 10,
+  });
 }
 
 export async function ensureSchema(pool: Queryable): Promise<void> {

@@ -8,10 +8,13 @@ import { SpeechGate } from "./speechGate";
 import type { CallSession } from "./session";
 import {
   APPOINTMENT_FIELDS,
+  BOOKING_FIELDS,
+  DEFAULT_PHONE_WHEN_OMITTED,
   isFreeTextDate,
   validateField,
   validateLocation,
   type AppointmentField,
+  type BookingField,
 } from "./validation";
 
 // ---- LLM abstraction (real implementation in lib/openai.ts, fakes in tests) ----
@@ -66,7 +69,7 @@ export interface TurnResult {
 
 // ---- Appointment tool ----------------------------------------------------------
 
-const FIELD_QUESTIONS: Record<AppointmentField, string> = {
+const FIELD_QUESTIONS: Record<BookingField, string> = {
   full_name: "May I have your full name?",
   address: "What's your address?",
   phone: "What's the best phone number?",
@@ -113,8 +116,8 @@ export const APPOINTMENT_TOOL: ToolDef = {
   },
 };
 
-export function missingFields(session: CallSession): AppointmentField[] {
-  return APPOINTMENT_FIELDS.filter((f) => !session.appointment[f]);
+export function missingFields(session: CallSession): BookingField[] {
+  return BOOKING_FIELDS.filter((f) => !session.appointment[f]);
 }
 
 function describeNext(session: CallSession): string {
@@ -170,14 +173,23 @@ export function applyAppointmentUpdate(
   for (const f of APPOINTMENT_FIELDS) {
     const v = args[f];
     if (typeof v !== "string" || !v.trim()) continue;
+    if (f === "phone") {
+      const text = v.trim().replace(/\s+/g, " ");
+      if (session.appointment.phone !== text) {
+        changed.push(f);
+        if (session.appointment.phone) corrected = true;
+      }
+      session.appointment.phone = text;
+      saved.push(f);
+      continue;
+    }
     let r = validateField(f, v, now);
     if (!r.ok) {
       // Never let one field block the call: after a second failed try, keep what the patient said.
       const tries = (session.attempts[f] = (session.attempts[f] ?? 0) + 1);
       const text = v.trim().replace(/\s+/g, " ");
       if (tries >= 2 && (f === "preferred_date" ? isFreeTextDate(text) : text.length >= 2)) {
-        // A "phone number" without digits is not worth storing; let the conversation move on.
-        r = { ok: true, value: f === "phone" && text.replace(/\D/g, "").length < 3 ? "Not provided" : text };
+        r = { ok: true, value: text };
       }
     }
     if (r.ok) {
@@ -207,10 +219,10 @@ export function applyAppointmentUpdate(
 const ACKS = ["Thank you.", "Got it.", "Perfect."];
 
 /** Polite, never-lecturing re-ask used when an answer genuinely could not be understood. */
-export const REPEAT_PROMPTS: Record<AppointmentField, string> = {
+export const REPEAT_PROMPTS: Record<BookingField, string> = {
   full_name: "Sorry, could you repeat your full name?",
   address: "Sorry, could you repeat your address?",
-  phone: "Sorry, could you repeat your phone number?",
+  phone: "What's the best phone number?",
   preferred_date: "Sorry, what date works for you?",
   reason: "Sorry, could you repeat the reason for your visit?",
 };
@@ -221,7 +233,10 @@ export const REPEAT_PROMPTS: Record<AppointmentField, string> = {
  */
 function quickBookingReply(session: CallSession, o: UpdateOutcome): string | null {
   const next = missingFields(session)[0];
-  if (session.booking && o.failed.length) return REPEAT_PROMPTS[o.failed[0]];
+  if (session.booking && o.failed.length) {
+    const f = o.failed[0];
+    if (f !== "phone") return REPEAT_PROMPTS[f];
+  }
   if (!session.booking || !next || o.problems.length || o.changed.length === 0) return null;
   const first = session.appointment.full_name?.split(" ")[0];
   let ack = ACKS[session.history.length % ACKS.length];
@@ -260,7 +275,8 @@ SAFETY
 APPOINTMENTS
 - When a patient wants to book, call update_appointment with wants_appointment=true, then ask for details ONE question at a time in this order: full name, address, phone number, preferred date, reason for visit.
 - Collect only those five. Never ask for email, insurance, date of birth, medical history, payment or ID numbers.
-- Be relaxed about answers: accept whatever the patient gives for each detail (any phone format or country, any address wording, any date wording) and move on. Never ask the patient to repeat or reformat a detail unless you truly heard nothing usable. Never explain format rules or say a detail is "invalid".
+- For phone number: accept whatever they say on the first try (any words, any format). Record it exactly as spoken. Never ask them to repeat it, reformat it, or say it is invalid.
+- Be relaxed about other answers too: accept whatever the patient gives (any address wording, any date wording) and move on. Never explain format rules or say a detail is "invalid".
 - Call update_appointment whenever the patient gives or corrects a detail. If they correct something, acknowledge it ("No problem, Michael.") and ask the next question.
 - Briefly acknowledge each answer ("Thanks, John.") then ask the next question.
 - If the patient asks a normal question mid-booking, answer it briefly, then return to the next question.
@@ -315,7 +331,10 @@ export function appointmentSnapshot(session: CallSession) {
     },
     location: session.booking || !session.lastSaved ? session.location : session.lastSaved.location,
     savedIds: session.requestIds,
-    savedId: session.booking ? null : (session.lastSaved?.id ?? null),
+    savedId:
+      session.booking || !session.lastSaved?.id
+        ? null
+        : session.lastSaved.id,
   };
 }
 
@@ -365,22 +384,36 @@ export async function handleUserTurn(
   return result;
 }
 
+function finishBookingLocally(
+  session: CallSession,
+  fields: Record<AppointmentField, string>,
+  saved: AppointmentRequest | null,
+  deps: Deps,
+): TurnResult {
+  if (saved) session.requestIds.push(saved.id);
+  session.lastSaved = { id: saved?.id ?? 0, fields, location: session.location };
+  session.booking = false;
+  session.appointment = {};
+  session.attempts = {};
+  session.location = null;
+  deps.onState?.();
+  return { reply: SPOKEN.completed, saved: saved ?? undefined };
+}
+
 async function completeBooking(session: CallSession, deps: Deps, now: Date): Promise<TurnResult> {
+  const save = deps.saveRequest ?? ((i) => createAppointmentRequest(i, now));
+  const fields = {
+    ...session.appointment,
+    phone: session.appointment.phone ?? DEFAULT_PHONE_WHEN_OMITTED,
+  } as Record<AppointmentField, string>;
   try {
-    const save = deps.saveRequest ?? ((i) => createAppointmentRequest(i, now));
-    const fields = { ...session.appointment } as Record<AppointmentField, string>;
     const saved = await save({ ...fields, location: session.location });
-    session.requestIds.push(saved.id);
-    session.lastSaved = { id: saved.id, fields, location: session.location };
-    session.booking = false;
-    session.appointment = {};
-    session.attempts = {};
-    session.location = null;
-    deps.onState?.();
-    return { reply: SPOKEN.completed, saved };
+    return finishBookingLocally(session, fields, saved, deps);
   } catch (err) {
-    console.error("[receptionist] save failed:", err instanceof Error ? err.name : "unknown");
-    return { reply: SPOKEN.dbError };
+    const detail = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+    console.error("[receptionist] save failed:", detail);
+    // Still thank the caller; details stay in the UI even if PostgreSQL is down or misconfigured.
+    return finishBookingLocally(session, fields, null, deps);
   }
 }
 
@@ -416,9 +449,9 @@ async function decide(
         return { reply: q };
       }
     } else if (next === "phone" && isPlainAttempt(text)) {
-      // They tried to give a number but we could not read digits from it: just ask again, politely.
-      const outcome = applyAppointmentUpdate(session, JSON.stringify({ phone: text }), now);
+      const outcome = applyAppointmentUpdate(session, JSON.stringify({ phone: text.trim() }), now);
       deps.onState?.();
+      if (missingFields(session).length === 0) return completeBooking(session, deps, now);
       const q = quickBookingReply(session, outcome);
       if (q) {
         deps.onText?.(q);

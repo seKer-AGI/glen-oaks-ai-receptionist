@@ -1,10 +1,10 @@
 import {
-  normalizePhone,
   parsePreferredDate,
   validateAddress,
   validateName,
   validateReason,
   type AppointmentField,
+  type BookingField,
   type Location,
 } from "./validation";
 
@@ -21,7 +21,7 @@ const CORRECTION_RE =
 const FILLER_RE = /^(?:(?:um+|uh+|hm+|well|so|okay|ok|alright|sure|yes|yeah|yep)\b[\s,.]*)+/i;
 const NOT_A_NAME = new Set(["yes", "no", "okay", "ok", "sure", "hello", "hi", "hey", "what", "huh", "why", "thanks", "please", "um", "uh", "hm", "hmm"]);
 
-const PREFIXES: Record<AppointmentField, RegExp> = {
+const PREFIXES: Record<BookingField, RegExp> = {
   full_name: /^(?:my (?:full )?name(?:'s| is)|the name is|name is|this is|it's|it is|i am|i'm|call me)\s+/i,
   address: /^(?:my (?:home |mailing )?address(?:'s| is)|the address is|address is|it's|it is|i live (?:at|in|on)|i'm (?:at|on)|i am (?:at|on)|that's|that is)\s+/i,
   phone: /^(?:my (?:phone |cell |mobile )?(?:number|phone)(?:'s| is)|the number is|number is|it's|it is|you can (?:reach|call) me at|call me at)\s+/i,
@@ -35,24 +35,11 @@ export interface DirectAnswer {
   args: Partial<Record<AppointmentField, string>> & { location?: Location };
 }
 
-function strip(text: string, field: AppointmentField): string {
+function strip(text: string, field: BookingField): string {
   let t = text.trim().replace(/[.!]+$/, "").replace(/\s+please$/i, "").trim();
   t = t.replace(FILLER_RE, "").trim();
   t = t.replace(PREFIXES[field], "").trim();
   return t;
-}
-
-const CORRECTION_SPLIT_RE = /\b(?:actually|sorry|wait|no no|i mean|i meant|correction|rather|let me correct|it should be|make that)\b/i;
-
-/** "718-555-1234... actually it's 718-555-5678": the last number that parses wins. */
-function phoneAnswer(text: string): DirectAnswer | null {
-  if (text.includes("?")) return null;
-  const segments = text.split(CORRECTION_SPLIT_RE);
-  for (let i = segments.length - 1; i >= 0; i--) {
-    const v = strip(segments[i], "phone");
-    if (v && normalizePhone(v).ok) return { args: { phone: v } };
-  }
-  return null;
 }
 
 /** True if the reply looks like an attempt to answer (short, not a question or a correction request). */
@@ -61,11 +48,10 @@ export function isPlainAttempt(text: string): boolean {
 }
 
 export function directAnswer(
-  field: AppointmentField,
+  field: BookingField,
   text: string,
   now: Date,
 ): DirectAnswer | null {
-  if (field === "phone") return text.split(/\s+/).length > 30 ? null : phoneAnswer(text);
   if (text.split(/\s+/).length > MAX_WORDS || QUESTION_RE.test(text) || CORRECTION_RE.test(text)) return null;
   const v = strip(text, field);
   if (!v) return null;
@@ -77,6 +63,10 @@ export function directAnswer(
     }
     case "address":
       return (/\d/.test(v) || v.split(/\s+/).length >= 2) && validateAddress(v).ok ? { args: { address: v } } : null;
+    case "phone": {
+      const phone = v || text.trim();
+      return phone ? { args: { phone } } : null;
+    }
     case "preferred_date":
       return parsePreferredDate(v, now).ok ? { args: { preferred_date: v } } : null;
     case "reason": {
